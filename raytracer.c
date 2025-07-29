@@ -22,6 +22,8 @@
 #define PLANET2_ORBIT_RADIUS 1.6f  
 #define PLANET2_ORBIT_SPEED 0.6f
 
+#define CAMERA_ORBIT_RADIUS 4.0f
+
 // Scene dimensions
 #define NUM_SPHERES 3
 #define NUM_PLANES 0
@@ -143,7 +145,7 @@ static const Vec3 g_unit_vector_lut[UNIT_VECTOR_LUT_SIZE] = {
     {.x = 110, .y = 180, .z = 210}, {.x = -110, .y = -180, .z = -210}
 };
 
-static Ray camera = {.orig = {.x = F(0), .y = F(0),.z = F(0)}, .dir = {.x = F(0), .y = F(0), .z = F(0)}};
+static Ray camera = {.orig = {.x = F(0), .y = F(1.2),.z = F(3)}, .dir = {.x = F(0), .y = F(0), .z = F(-1)}};
 
 static Sphere g_spheres[NUM_SPHERES] = {
     {.center = {.x = F(0.7), .y = F(0.5), .z = F(0.1)}, .radius = F(0.2), .material = {.color = {.x = F(0.8), .y = F(0.6), .z = F(0.3)}, .is_light = 0}}, // Planet 1 - orange/brown
@@ -254,6 +256,7 @@ Vec3 rotate_y(Vec3 v, float angle) {
     };
 }
 
+
 // Calculate orbital position for a planet
 Vec3 get_orbital_position(Vec3 sun_center, float orbit_radius, float orbit_speed, float time) {
     float angle = orbit_speed * time;
@@ -273,15 +276,38 @@ void update_planet_positions(float time) {
     g_spheres[2].center = get_orbital_position(sun_pos, PLANET2_ORBIT_RADIUS, PLANET2_ORBIT_SPEED, time);
 }
 
+Vec3 get_camera_position(Vec3 sun_center, float orbit_radius, float angle){
+    Vec3 offset = (Vec3){F(0), F(0), F(orbit_radius)};
+    Vec3 rotated_offset = rotate_y(offset, angle);
+    return vec_add(sun_center, rotated_offset);
+}
 
-void update_camera_position(uint16_t scanCode){
-// position update
-    if(scanCode==0xF01D) camera.orig.x += F(5); // w key
-    if(scanCode==0xF01B) camera.orig.x -= F(1); // s key
-    if(scanCode==0xF01C) camera.orig.z -= F(1); // a key
-    if(scanCode==0xF023) camera.orig.z += F(1); // d key
-    if(scanCode==0xF029) camera.orig.y += F(1); // space key
-    if(scanCode==0xF014) camera.orig.y -= F(1); // ctrl key
+void update_camera_orbit(float angle) {
+    Vec3 sun_pos = g_spheres[1].center;
+
+    // Orbit camera around Y-axis at fixed radius
+    float x = CAMERA_ORBIT_RADIUS * sinf(angle);
+    float z = CAMERA_ORBIT_RADIUS * cosf(angle);
+    camera.orig = (Vec3){F(x), F(1.2), F(z)};  // Keep eye level fixed
+
+    // Point toward the sun
+    Vec3 to_sun = vec_sub(sun_pos, camera.orig);
+    camera.dir = vec_norm(to_sun);
+}
+
+static float camera_angle = M_PI;
+
+void update_camera_position(uint16_t scanCode, float timeStep){
+    Vec3 sun_pos = g_spheres[1].center;
+
+    // A key: rotate left
+    if (scanCode == 0xF01C) camera_angle -= timeStep;
+    // D key: rotate right
+    if (scanCode == 0xF023) camera_angle += timeStep;
+
+    // Update camera position
+    camera.orig = get_camera_position(sun_pos, CAMERA_ORBIT_RADIUS, camera_angle);
+    update_camera_orbit(camera_angle);
 }
 
 // Returns an Intersection result.
@@ -340,7 +366,7 @@ Color trace_path(int16_t x, int16_t y) {
 
     float fov_rad = FOV * M_PI / 180.0;
     float fov_scale = tan(fov_rad / 2.0);
-    //float aspect_ratio = (float)WIDTH / HEIGHT;
+    float aspect_ratio = (float)WIDTH / HEIGHT;
 
     float sx_ndc = (2.0f * (x) / WIDTH) - 1.0f;
     float sy_ndc = 1.0f - (2.0f * (y) / HEIGHT);
@@ -350,10 +376,20 @@ Color trace_path(int16_t x, int16_t y) {
     int32_t acc_r = 0, acc_g = 0, acc_b = 0;
 
     for (int sample = 0; sample < NUM_SAMPLES; sample++) {
-        r = camera;
-        r.dir.x = F(sx_ndc * fov_scale);
-        r.dir.y = F(sy_ndc * fov_scale);
-        r.dir = vec_norm(r.dir);
+        r.orig = camera.orig;
+
+        Vec3 forward = vec_norm(camera.dir);
+        Vec3 up = (Vec3){F(0), F(1), F(0)};
+        Vec3 right = vec_norm((Vec3){forward.z, F(0), -forward.x});  
+
+        float sx = sx_ndc * fov_scale * aspect_ratio;
+        float sy = sy_ndc * fov_scale;
+
+        Vec3 dir = vec_add(
+        vec_add(vec_scale(right, F(sx)), vec_scale(up, F(sy))),
+        forward
+        );
+        r.dir = vec_norm(dir);
         Vec3 path_color = {F(0), F(0), F(0)};
         Vec3 path_attenuation = {ONE, ONE, ONE};
 
@@ -453,7 +489,7 @@ int main(int argc, char *argv[]) {
     // Update planet positions for current animation time
     update_planet_positions(animation_time);
     // Update camera position for scan code
-    update_camera_position(0xF01D); 
+    update_camera_position(0xF023, animation_time + 0.5); 
     
     // Create PPM image header
     printf("P3\n");
